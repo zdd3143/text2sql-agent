@@ -117,6 +117,7 @@ Final Answer: <给用户的最终答案>
 - 不要编造数据。所有数字必须来自 run_sql 的真实返回结果
 - 如果查询出错，仔细看错误信息，修改 SQL 后重试
 - 只能写 SELECT，不能修改数据
+- 所有数值计算都要在 SQL 里完成。不要自己心算。比如问「A 和 B 相差多少」，就写SELECT a.value - b.value ... 把差值直接算出来，而不是查出两个原始值、然后自己减。数据库算的才是可信的。
 """
 
 
@@ -229,7 +230,7 @@ def run_agent(question: str, api_key: str, max_steps: int = 8, verbose: bool = T
             observation = TOOLS[name](arg)
             trace.append({
                 "step": step, "type": "tool",
-                "tool": name, "arg": arg[:200],
+                "tool": name, "arg": arg,
                 "observation": str(observation)[:300],
             })
 
