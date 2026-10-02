@@ -26,7 +26,7 @@ from pathlib import Path
 
 import requests
 
-DB = Path("data/demo.db")
+DB = Path(os.environ.get("T2S_DB", "data/demo.db"))
 
 # 当前变体，由 set_variant() 修改
 VARIANT = "baseline"
@@ -332,10 +332,32 @@ def run_agent(question: str, api_key: str, max_steps: int = 8, verbose: bool = T
 
         name, arg = parse_action(reply)
 
+        # 情况 1：模型想给最终答案
         if name is None and arg is not None:
+            # ★ 护栏：一次数据库都没查过，就不许给答案。
+            #
+            #   为什么必须在代码层拦：
+            #     提示词里已经写了「所有数字必须来自 run_sql 的真实返回结果」，
+            #     但实测在【大 schema + A_schema 变体】下，它有 80% 的概率无视这条规则，
+            #     直接凭世界知识编出一组精确、内部自洽、但完全错误的数字。
+            #     提示词是"建议"，代码才是"约束"。
+            queried = any(t["type"] == "tool" and t["tool"] == "run_sql"
+                          for t in trace)
+            if not queried:
+                trace.append({"step": step, "type": "blocked_no_query"})
+                if verbose:
+                    print("→ [护栏] 未查询数据库，拒绝该答案，要求它先查")
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({
+                    "role": "user",
+                    "content": "你还没有执行过任何 SQL 查询。所有数字必须来自 "
+                               "run_sql 的真实返回结果，不能凭记忆回答。"
+                               "请先调用 run_sql 查询数据。",
+                })
+                continue
+
             trace.append({"step": step, "type": "answer"})
             return arg, trace
-
         if name is None:
             messages.append({"role": "assistant", "content": reply})
             messages.append({

@@ -3,8 +3,17 @@ import sqlite3
 from pathlib import Path
 
 DB = Path("data/demo.db")
-DB.parent.mkdir(parents=True, exist_ok=True)
-DB.unlink(missing_ok=True)          
+
+# ⚠️【不要在模块级做删除 / 写文件这类副作用】
+#
+#   这个脚本最初把 DB.unlink() 写在模块级，结果：
+#       任何 `import stage0_build_db`（哪怕只是想复用里面的常量）
+#       都会把数据库删掉；又因为 main() 没被调用，库里就再也没重建。
+#   实测踩过：一次"模块导入冒烟测试"直接把 demo.db 变成了 0 字节，
+#   而且当时完全没意识到 —— 直到发现 A_schema 变体的 schema 是空的。
+#
+#   教训：**import 一个模块不该产生副作用。**
+#   删除动作必须放进 main()。
 
 # ---- 表结构设计 ----
 SCHEMA = """
@@ -73,6 +82,11 @@ PRODUCTION = [
 
 
 def main():
+    # 每次重建，保证结果可复现。
+    # ★ 这个删除动作必须留在 main() 里 —— 放模块级会导致 import 就删库。
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    DB.unlink(missing_ok=True)
+
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
