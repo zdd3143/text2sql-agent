@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "eval"))
 
 from questions import QUESTIONS          # noqa: E402
-from stage2_agent import DB, run_agent, load_env   # noqa: E402
+from stage4_agent import DB, run_agent, load_env, set_variant   # noqa: E402
 
 import os
 import sqlite3
@@ -116,23 +116,30 @@ def evaluate_one(item, api_key: str, verbose: bool = False):
         result["note"] = f"❌ 标准 SQL 本身有错: {gold_err}"
         return result
 
-    # 从 trace 里找出 Agent 最后一次成功的查询
-    last_rows = None
+    # ---- 收集 trace 里【所有】成功执行的 SQL 结果 ----
+    # ★ 为什么不是只取最后一次：
+    #   Agent 可能先算出答案、然后又查了一次明细来"展示过程"。
+    #   实测 q007 就是这样 —— 它先算了平均值（正确），
+    #   再查明细（用来在回答里列出来），只看最后一次就会把"答对"判成"答错"。
+    all_rows = []
     for t in trace:
         if t["type"] != "tool" or t["tool"] != "run_sql":
             continue
-        sql = t["arg"]
-        rows, err = exec_sql(sql)
+        rows, err = exec_sql(t["arg"])
         if err is None:
             result["valid_sql"] = True
-            last_rows = rows
+            all_rows.append(rows)
 
-    if last_rows is None:
+    if not all_rows:
         result["note"] = "Agent 没有产出可执行的 SQL"
         return result
 
-    strict = normalize(last_rows) == normalize(gold_rows)
-    loose = contains_gold(gold_rows, last_rows)
+    last_rows = all_rows[-1]
+
+    # 严格：trace 里有【任意一次】查询的结果集与标准 SQL 完全一致
+    strict = any(normalize(r) == normalize(gold_rows) for r in all_rows)
+    # 宽松：trace 里有【任意一次】查询的结果包含标准答案的值
+    loose = any(contains_gold(gold_rows, r) for r in all_rows)
 
     result["correct_strict"] = strict
     result["correct"] = loose              # 宽松指标作为主指标
@@ -155,17 +162,38 @@ def main():
     #   python src/stage3_eval.py q010              只跑某一题
     #   python src/stage3_eval.py --repeat 3        重复 3 次
     #   python src/stage3_eval.py unit --repeat 3   组合使用
+    # ★ 关键顺序：先把所有「带值的选项」从参数里【取出来并删掉】，
+    #   最后剩下不以 -- 开头的才是筛选条件。
+    #   否则 --variant 的值（如 A_schema）会被当成"只跑这个类型"。
     args = list(sys.argv[1:])
-    repeat = 1
-    if "--repeat" in args:
-        k = args.index("--repeat")
-        try:
-            repeat = int(args[k + 1])
-        except (IndexError, ValueError):
-            raise SystemExit("--repeat 后面要跟一个整数，例如 --repeat 3")
-        del args[k:k + 2]          # ★ 必须先把 --repeat N 摘掉
 
-    # ★ 再过滤一次：任何以 -- 开头的残留参数都不该被当成筛选条件
+    def pop_option(name: str):
+        """取出 --name VALUE 并把它俩一起从 args 删掉；不存在则返回 None。
+
+        用「取值即删除」而不是「先读一遍再过滤」，是为了从根上避免
+        『选项的值泄漏成筛选条件』这类 bug。
+        """
+        if name not in args:
+            return None
+        k = args.index(name)
+        if k + 1 >= len(args):
+            raise SystemExit(f"{name} 后面要跟一个值")
+        value = args[k + 1]
+        del args[k:k + 2]
+        return value
+
+    repeat_raw = pop_option("--repeat")
+    repeat = 1
+    if repeat_raw is not None:
+        try:
+            repeat = int(repeat_raw)
+        except ValueError:
+            raise SystemExit("--repeat 后面要跟一个整数，例如 --repeat 3")
+
+    variant = pop_option("--variant") or "baseline"
+    set_variant(variant)
+
+    # 剩下的第一个非选项参数 = 筛选条件（类型名或题号）
     rest = [a for a in args if not a.startswith("--")]
     only = rest[0] if rest else None
 
@@ -179,7 +207,7 @@ def main():
             f"  可用题号：{[q['id'] for q in QUESTIONS]}"
         )
 
-    print(f"评估集：{len(items)} 题 | 重复 {repeat} 次"
+    print(f"评估集：{len(items)} 题 | 重复 {repeat} 次 | 变体 {variant}"
           + (f" | 筛选 {only}" if only else ""))
 
     all_runs = []
